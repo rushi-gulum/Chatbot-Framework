@@ -1,0 +1,90 @@
+# General settings
+environment: "development"  # or "production", "staging"
+app_name: "ChatCore"
+debug_mode: true
+
+# API Keys (Masked for security - replace with actual values in a secure way, e.g., environment variables)
+api_keys:
+  openai: "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  claude: "claude-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  mistral: "mistral-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# LLM Configuration
+llm:
+  default_model: "openai"  # Options: "openai", "claude", "mistral", "local"
+
+  openai:
+    model_name: "gpt-3.5-turbo"
+    temperature: 0.7
+    max_tokens: 256
+
+  claude:
+    model_name: "claude-v1"
+    temperature: 0.9
+    max_tokens: 200
+
+  mistral:
+    model_name: "mistral-medium"
+    temperature: 0.75
+    max_tokens: 256
+
+  local:
+    model_name: "llama2" # Specify name of local model
+    model_path: "/path/to/your/llama2/model"  #Path to local model
+    temperature: 0.7
+    max_tokens: 256
+
+# Channel Configuration
+channels:
+  web:
+    enabled: true
+    port: 5000  #Example ports
+  whatsapp:
+    enabled: false
+    twilio_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    twilio_token: "your_twilio_auth_token"
+    twilio_number: "+1234567890"
+  voice:
+    enabled: false
+    #STT and TTS settings
+
+# Database Configuration
+database:
+  type: "firestore"  # Options: "firestore", "mongodb", "postgres"
+  firestore:
+    credentials_path: "path/to/firestore_credentials.json"
+    collection_name: "chat_sessions"
+  # Add configurations for other database types as needed
+
+# Rate Limiter Configuration
+rate_limiter:
+  enabled: true
+  requests_per_minute: 100
+  # Add settings for different rate limiting strategies
+
+# Security settings
+security:
+  encryption_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" #AES encryption key
+
+# Monitoring & Analytics
+monitoring:
+  usage_tracking_enabled: true
+  error_reporting_enabled: true
+
+
+
+
+
+
+
+# API Key Masking: The API keys are represented with placeholder values. Important: Never store actual API keys directly in the YAML file, especially if it's committed to a repository. Instead, load them from environment variables or a secure secrets management system.
+# LLM Configuration: Includes settings for OpenAI, Claude, and Mistral, allowing you to specify the model name, temperature, and max tokens for each. A default_model setting lets you easily switch between the LLMs. Added local LLM support.
+# Channel Configuration: Enables/disables different channels (web, WhatsApp, voice) and includes channel-specific settings (e.g., Twilio credentials for WhatsApp, port for the web interface).
+# Database Configuration: Configures the database connection, including the database type and connection details.
+# Environment-Specific Variables: Uses an environment setting to potentially load different configurations based on the environment (development, production, etc.). You could extend this to load separate YAML files for each environment.
+# Rate Limiter Configuration: Settings to configure rate limiting to prevent abuse and protect your API.
+# Security Settings: Include a placeholder for an encryption key used for AES encryption of sensitive information.
+# Monitoring & Analytics: Flags for enabling/disabling usage tracking and error reporting.
+
+
+
