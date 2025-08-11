@@ -8,10 +8,11 @@ api_keys:
   openai: "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   claude: "claude-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   mistral: "mistral-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  google: "AIzaSyD4kpP2dQKiyEM71HhrZqYIOt9W36Lr8-w"
 
 # LLM Configuration
 llm:
-  default_model: "openai"  # Options: "openai", "claude", "mistral", "local"
+  default_model: "openai"  # Options: "openai", "claude", "mistral", "google", "local"
 
   openai:
     model_name: "gpt-3.5-turbo"
@@ -26,6 +27,11 @@ llm:
   mistral:
     model_name: "mistral-medium"
     temperature: 0.75
+    max_tokens: 256
+
+  google:
+    model_name: "gemini-pro"
+    temperature: 0.8
     max_tokens: 256
 
   local:
@@ -65,6 +71,16 @@ rate_limiter:
 # Security settings
 security:
   encryption_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" #AES encryption key
+  jwt_secret: "your-jwt-secret-key-change-this-in-production"
+  jwt_algorithm: "HS256"
+  jwt_expiry_hours: 24
+  rate_limit_per_minute: 60
+  rate_limit_per_hour: 1000
+  redis_url: "redis://localhost:6379"
+  webhook_signature_header: "X-Signature"
+  webhook_secret: "your-webhook-secret"
+  enforce_https: true
+  allowed_origins: ["https://yourdomain.com"]
 
 # Monitoring & Analytics
 monitoring:
