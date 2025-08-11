@@ -14,6 +14,7 @@ import re
 import asyncio
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from .base_core import ISummarizer, secure_logger
 
@@ -310,6 +311,92 @@ class Summarizer(ISummarizer):
             )
         }
     
+    async def extract_key_points(self, conversation_summary: str) -> List[str]:
+        """
+        Extract key points from conversation summary.
+        
+        Args:
+            conversation_summary: Summary text to extract key points from
+            
+        Returns:
+            List of key points
+        """
+        if not conversation_summary or not conversation_summary.strip():
+            return []
+        
+        try:
+            # Simple sentence-based key point extraction
+            sentences = re.split(r'[.!?]+', conversation_summary)
+            key_points = []
+            
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if len(sentence) > 10:  # Filter out very short sentences
+                    # Look for sentences with keywords that indicate importance
+                    important_keywords = ['important', 'key', 'main', 'primary', 'significant', 'critical']
+                    if any(keyword in sentence.lower() for keyword in important_keywords):
+                        key_points.append(sentence)
+                    elif len(sentence) > 20:  # Include longer sentences as potentially important
+                        key_points.append(sentence)
+            
+            # If no key points found, use first few sentences
+            if not key_points and sentences:
+                key_points = [s.strip() for s in sentences[:3] if s.strip() and len(s.strip()) > 10]
+            
+            # Limit to top 5 key points
+            return key_points[:5]
+            
+        except Exception as e:
+            secure_logger.error(f"Error extracting key points: {str(e)}")
+            return [conversation_summary[:100] + "..."] if len(conversation_summary) > 100 else [conversation_summary]
+    
+    async def generate_analytics_summary(self, context) -> Dict[str, Any]:
+        """
+        Generate summary for analytics purposes.
+        
+        Args:
+            context: Conversation context (flexible type for compatibility)
+            
+        Returns:
+            Analytics summary dictionary
+        """
+        try:
+            # Handle different context types
+            if hasattr(context, '__dict__'):
+                context_dict = context.__dict__ if hasattr(context, '__dict__') else {}
+            elif isinstance(context, dict):
+                context_dict = context
+            else:
+                context_dict = {'context': str(context)}
+            
+            # Extract analytics metrics
+            analytics = {
+                'summary_timestamp': datetime.now().isoformat(),
+                'conversation_length': len(context_dict.get('messages', [])),
+                'sentiment': context_dict.get('sentiment', 'neutral'),
+                'user_satisfaction': context_dict.get('satisfaction_score', 0),
+                'topics_discussed': context_dict.get('topics', []),
+                'resolution_status': context_dict.get('resolved', False),
+                'processing_metrics': self.get_metrics()
+            }
+            
+            # Add conversation summary if messages are available
+            messages = context_dict.get('messages', [])
+            if messages and isinstance(messages, list):
+                summary = await self.summarize_conversation(messages)
+                analytics['conversation_summary'] = summary
+                analytics['key_points'] = await self.extract_key_points(summary)
+            
+            return analytics
+            
+        except Exception as e:
+            secure_logger.error(f"Error generating analytics summary: {str(e)}")
+            return {
+                'summary_timestamp': datetime.now().isoformat(),
+                'error': str(e),
+                'status': 'failed'
+            }
+
     async def health_check(self) -> Dict[str, Any]:
         """Perform health check on the summarizer."""
         try:

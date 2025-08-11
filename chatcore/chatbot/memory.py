@@ -18,39 +18,9 @@ from dataclasses import asdict
 
 from .base_core import IMemoryProvider, ChatMessage, ConversationContext, SentimentType, secure_logger
 
-# Conditional imports for components that may not exist yet
-try:
-    from ..retriever.vectorstore import VectorStore
-except ImportError:
-    # Fallback implementation if VectorStore doesn't exist
-    class VectorStore:
-        def __init__(self, config=None):
-            self.documents = []
-        
-        async def add_document(self, doc):
-            self.documents.append(doc)
-        
-        async def search(self, query, filters=None, num_results=5):
-            # Simple text matching fallback
-            results = []
-            for doc in self.documents:
-                if query.lower() in doc.get('content', '').lower():
-                    results.append(doc)
-                if len(results) >= num_results:
-                    break
-            return results
-
-try:
-    from .summarizer import Summarizer
-except ImportError:
-    # Fallback implementation if Summarizer doesn't exist
-    class Summarizer:
-        def __init__(self, config=None):
-            pass
-        
-        async def summarize(self, text):
-            # Simple truncation fallback
-            return text[:200] + "..." if len(text) > 200 else text
+# Import actual implementation classes
+from ..retriever.vectorstore import VectorStore  # type: ignore
+from .summarizer import Summarizer  # type: ignore
 
 
 class EnterpriseMemoryProvider(IMemoryProvider):
