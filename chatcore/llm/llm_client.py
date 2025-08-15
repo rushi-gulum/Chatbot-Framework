@@ -272,7 +272,7 @@ class TokenCounter:
         """Count tokens in text for a specific model."""
         if not TIKTOKEN_AVAILABLE:
             # Fallback: rough estimation
-            return len(text.split()) * 1.3
+            return int(len(text.split()) * 1.3)
         
         try:
             if model not in self.encoders:
@@ -281,7 +281,7 @@ class TokenCounter:
             return len(encoder.encode(text))
         except Exception:
             # Fallback for unknown models
-            return len(text.split()) * 1.3
+            return int(len(text.split()) * 1.3)
     
     def count_messages_tokens(self, messages: List[Message], model: str = "gpt-3.5-turbo") -> int:
         """Count tokens in a list of messages."""
@@ -380,7 +380,7 @@ class ResponseCache:
         try:
             if self.redis_client:
                 # Use Redis
-                cached_data = self.redis_client.get(cache_key)
+                cached_data = await asyncio.to_thread(self.redis_client.get, cache_key)
                 if cached_data:
                     data = json.loads(cached_data)
                     response = LLMResponse(**data)
@@ -424,7 +424,8 @@ class ResponseCache:
             
             if self.redis_client:
                 # Use Redis
-                self.redis_client.setex(
+                await asyncio.to_thread(
+                    self.redis_client.setex,
                     cache_key,
                     self.ttl,
                     json.dumps(response_data, default=str)
@@ -544,7 +545,10 @@ class BaseLLMClient(ABC):
                     logger.error(f"All {self.config.max_retries + 1} attempts failed")
                     break
         
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        else:
+            raise ModelError("Request failed with unknown error")
     
     @abstractmethod
     async def _make_request(self, request: LLMRequest) -> LLMResponse:
@@ -552,7 +556,7 @@ class BaseLLMClient(ABC):
         pass
     
     @abstractmethod
-    async def _make_streaming_request(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+    def _make_streaming_request(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
         """Make streaming API request (to be implemented by subclasses)."""
         pass
     
@@ -646,3 +650,448 @@ class BaseLLMClient(ABC):
             "temperature": self.config.temperature,
             "api_base": self.config.api_base
         }
+
+
+class OpenAIClient(BaseLLMClient):
+    """OpenAI LLM client implementation."""
+    
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        
+        if not OPENAI_AVAILABLE:
+            raise ModelError("OpenAI package not installed. Run: pip install openai")
+        
+        # Initialize OpenAI client
+        api_key = config.api_key or os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ModelError("OpenAI API key not provided")
+        
+        self.client = openai.AsyncOpenAI(
+            api_key=api_key,
+            organization=config.organization,
+            base_url=config.api_base,
+            timeout=config.timeout,
+            max_retries=0,  # We handle retries ourselves
+        )
+    
+    async def _make_request(self, request: LLMRequest) -> LLMResponse:
+        """Make OpenAI API request."""
+        start_time = time.time()
+        
+        try:
+            # Prepare messages
+            messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+            
+            # Prepare request parameters
+            params = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "frequency_penalty": request.frequency_penalty or self.config.frequency_penalty,
+                "presence_penalty": request.presence_penalty or self.config.presence_penalty,
+                "stream": False,
+                "user": request.user_id,
+            }
+            
+            if request.stop:
+                params["stop"] = request.stop
+            
+            # Make API call
+            response = await self.client.chat.completions.create(**params)
+            
+            # Extract response data
+            choice = response.choices[0]
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+            
+            return LLMResponse(
+                content=choice.message.content or "",
+                finish_reason=choice.finish_reason or "stop",
+                model=response.model,
+                usage=usage,
+                response_time=time.time() - start_time,
+                provider=LLMProvider.OPENAI,
+                metadata={"request_id": getattr(response, 'id', None)}
+            )
+            
+        except openai.RateLimitError as e:
+            retry_after = getattr(e.response.headers, 'retry-after', None)
+            raise RateLimitError(f"OpenAI rate limit exceeded: {e}", retry_after=retry_after)
+        
+        except openai.AuthenticationError as e:
+            raise SecurityError(f"OpenAI authentication failed: {e}")
+        
+        except openai.BadRequestError as e:
+            raise ModelError(f"OpenAI bad request: {e}")
+        
+        except Exception as e:
+            raise ModelError(f"OpenAI request failed: {e}")
+    
+    def _make_streaming_request(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Make streaming OpenAI API request."""
+        return self._stream_openai(request)
+    
+    async def _stream_openai(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Internal streaming implementation."""
+        try:
+            # Prepare messages
+            messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+            
+            # Prepare request parameters
+            params = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "frequency_penalty": request.frequency_penalty or self.config.frequency_penalty,
+                "presence_penalty": request.presence_penalty or self.config.presence_penalty,
+                "stream": True,
+                "user": request.user_id,
+            }
+            
+            if request.stop:
+                params["stop"] = request.stop
+            
+            # Make streaming API call
+            stream = await self.client.chat.completions.create(**params)
+            
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield StreamingChunk(
+                        content=chunk.choices[0].delta.content,
+                        finish_reason=chunk.choices[0].finish_reason,
+                        index=chunk.choices[0].index,
+                        metadata={"chunk_id": chunk.id}
+                    )
+                    
+        except Exception as e:
+            logger.error(f"OpenAI streaming error: {e}")
+            raise ModelError(f"OpenAI streaming failed: {e}")
+
+
+class AnthropicClient(BaseLLMClient):
+    """Anthropic Claude client implementation."""
+    
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        
+        if not ANTHROPIC_AVAILABLE:
+            raise ModelError("Anthropic package not installed. Run: pip install anthropic")
+        
+        # Initialize Anthropic client
+        api_key = config.api_key or os.getenv('ANTHROPIC_API_KEY')
+        if not api_key:
+            raise ModelError("Anthropic API key not provided")
+        
+        self.client = anthropic.AsyncAnthropic(
+            api_key=api_key,
+            base_url=config.api_base,
+            timeout=config.timeout,
+            max_retries=0,  # We handle retries ourselves
+        )
+    
+    def _convert_messages(self, messages: List[Message]) -> Tuple[str, List[Dict]]:
+        """Convert messages to Anthropic format."""
+        system_message = ""
+        anthropic_messages = []
+        
+        for msg in messages:
+            if msg.role == "system":
+                system_message = msg.content
+            else:
+                anthropic_messages.append({
+                    "role": msg.role,
+                    "content": msg.content
+                })
+        
+        return system_message, anthropic_messages
+    
+    async def _make_request(self, request: LLMRequest) -> LLMResponse:
+        """Make Anthropic API request."""
+        start_time = time.time()
+        
+        try:
+            # Convert messages
+            system_message, messages = self._convert_messages(request.messages)
+            
+            # Prepare request parameters
+            params = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "stream": False,
+            }
+            
+            if system_message:
+                params["system"] = system_message
+            
+            if request.stop:
+                params["stop_sequences"] = request.stop
+            
+            # Make API call
+            response = await self.client.messages.create(**params)
+            
+            # Extract response data
+            content = ""
+            if response.content:
+                content = " ".join([block.text for block in response.content if hasattr(block, 'text')])
+            
+            usage = {
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
+                "total_tokens": response.usage.input_tokens + response.usage.output_tokens,
+            }
+            
+            return LLMResponse(
+                content=content,
+                finish_reason=response.stop_reason or "stop",
+                model=response.model,
+                usage=usage,
+                response_time=time.time() - start_time,
+                provider=LLMProvider.ANTHROPIC,
+                metadata={"request_id": response.id}
+            )
+            
+        except anthropic.RateLimitError as e:
+            raise RateLimitError(f"Anthropic rate limit exceeded: {e}")
+        
+        except anthropic.AuthenticationError as e:
+            raise SecurityError(f"Anthropic authentication failed: {e}")
+        
+        except anthropic.BadRequestError as e:
+            raise ModelError(f"Anthropic bad request: {e}")
+        
+        except Exception as e:
+            raise ModelError(f"Anthropic request failed: {e}")
+    
+    def _make_streaming_request(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Make streaming Anthropic API request."""
+        return self._stream_anthropic(request)
+    
+    async def _stream_anthropic(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Internal streaming implementation."""
+        try:
+            # Convert messages
+            system_message, messages = self._convert_messages(request.messages)
+            
+            # Prepare request parameters
+            params = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "stream": True,
+            }
+            
+            if system_message:
+                params["system"] = system_message
+            
+            if request.stop:
+                params["stop_sequences"] = request.stop
+            
+            # Make streaming API call
+            async with self.client.messages.stream(**params) as stream:
+                async for chunk in stream:
+                    if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
+                        yield StreamingChunk(
+                            content=chunk.delta.text,
+                            finish_reason=None,
+                            index=0,
+                            metadata={"chunk_type": chunk.type}
+                        )
+                    elif hasattr(chunk, 'type') and chunk.type == 'message_stop':
+                        yield StreamingChunk(
+                            content="",
+                            finish_reason="stop",
+                            index=0,
+                            metadata={"chunk_type": chunk.type}
+                        )
+                        
+        except Exception as e:
+            logger.error(f"Anthropic streaming error: {e}")
+            raise ModelError(f"Anthropic streaming failed: {e}")
+
+
+class SelfHostedClient(BaseLLMClient):
+    """Self-hosted model client implementation."""
+    
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        
+        if not config.api_base:
+            raise ModelError("API base URL required for self-hosted models")
+        
+        # Parse URL to validate
+        parsed = urlparse(config.api_base)
+        if not parsed.scheme or not parsed.netloc:
+            raise ModelError("Invalid API base URL")
+        
+        self.api_base = config.api_base.rstrip('/')
+        self.headers = {
+            "Content-Type": "application/json",
+            **config.custom_headers
+        }
+        
+        if config.api_key:
+            self.headers["Authorization"] = f"Bearer {config.api_key}"
+    
+    async def _make_request(self, request: LLMRequest) -> LLMResponse:
+        """Make self-hosted API request."""
+        import aiohttp
+        
+        start_time = time.time()
+        
+        try:
+            # Prepare messages
+            messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+            
+            # Prepare request payload
+            payload = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "stream": False,
+            }
+            
+            if request.stop:
+                payload["stop"] = request.stop
+            
+            # Make API call
+            timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.api_base}/v1/chat/completions",
+                    json=payload,
+                    headers=self.headers,
+                    proxy=self.config.proxy_url
+                ) as response:
+                    
+                    if response.status == 429:
+                        retry_after = response.headers.get('Retry-After')
+                        raise RateLimitError(
+                            f"Rate limit exceeded",
+                            retry_after=int(retry_after) if retry_after else None
+                        )
+                    
+                    if response.status == 401:
+                        raise SecurityError("Authentication failed")
+                    
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        raise ModelError(f"API error {response.status}: {error_text}")
+                    
+                    data = await response.json()
+            
+            # Extract response data
+            choice = data['choices'][0]
+            usage = data.get('usage', {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            })
+            
+            return LLMResponse(
+                content=choice['message']['content'] or "",
+                finish_reason=choice.get('finish_reason', 'stop'),
+                model=data.get('model', self.config.model_name),
+                usage=usage,
+                response_time=time.time() - start_time,
+                provider=LLMProvider.SELF_HOSTED,
+                metadata={"api_base": self.api_base}
+            )
+            
+        except aiohttp.ClientError as e:
+            raise ModelError(f"Self-hosted API connection failed: {e}")
+        
+        except Exception as e:
+            if isinstance(e, LLMError):
+                raise
+            raise ModelError(f"Self-hosted API request failed: {e}")
+    
+    def _make_streaming_request(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Make streaming self-hosted API request."""
+        return self._stream_self_hosted(request)
+    
+    async def _stream_self_hosted(self, request: LLMRequest) -> AsyncIterator[StreamingChunk]:
+        """Internal streaming implementation."""
+        import aiohttp
+        
+        try:
+            # Prepare messages
+            messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
+            
+            # Prepare request payload
+            payload = {
+                "model": request.model or self.config.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self.config.max_tokens,
+                "temperature": request.temperature or self.config.temperature,
+                "top_p": request.top_p or self.config.top_p,
+                "stream": True,
+            }
+            
+            if request.stop:
+                payload["stop"] = request.stop
+            
+            # Make streaming API call
+            timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.api_base}/v1/chat/completions",
+                    json=payload,
+                    headers=self.headers,
+                    proxy=self.config.proxy_url
+                ) as response:
+                    
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        raise ModelError(f"API error {response.status}: {error_text}")
+                    
+                    async for line in response.content:
+                        line = line.decode('utf-8').strip()
+                        if line.startswith('data: '):
+                            data_str = line[6:]
+                            if data_str == '[DONE]':
+                                break
+                            
+                            try:
+                                data = json.loads(data_str)
+                                choice = data['choices'][0]
+                                delta = choice.get('delta', {})
+                                
+                                if 'content' in delta and delta['content']:
+                                    yield StreamingChunk(
+                                        content=delta['content'],
+                                        finish_reason=choice.get('finish_reason'),
+                                        index=choice.get('index', 0),
+                                        metadata={"api_base": self.api_base}
+                                    )
+                            except json.JSONDecodeError:
+                                continue
+                                
+        except Exception as e:
+            logger.error(f"Self-hosted streaming error: {e}")
+            raise ModelError(f"Self-hosted streaming failed: {e}")

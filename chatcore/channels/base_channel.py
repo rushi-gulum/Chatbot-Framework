@@ -1,413 +1,403 @@
 """
-Base Channel Implementation for Universal Chatbot Framework
+Base Channel Module
+==================
 
-This module provides the base classes and interfaces for all channel implementations
-in the universal chatbot framework.
+Base classes and interfaces for communication channels.
+Provides abstract base classes for implementing different communication platforms.
 """
 
-import asyncio
-import json
-import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, Any, Optional, List, AsyncGenerator
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import uuid
-
-# Configure logging
-logger = logging.getLogger(__name__)
-
-
-class ChannelType(Enum):
-    """Enumeration of supported channel types."""
-    WEB = "web"
-    WHATSAPP = "whatsapp"
-    VOICE = "voice"
-    MOBILE = "mobile"
-    TELEGRAM = "telegram"
-    SLACK = "slack"
-    SMS = "sms"
-    EMAIL = "email"
+import json
 
 
 class MessageType(Enum):
-    """Enumeration of message types."""
+    """Types of messages supported by channels."""
     TEXT = "text"
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"
-    DOCUMENT = "document"
+    FILE = "file"
     LOCATION = "location"
-    CONTACT = "contact"
-    STICKER = "sticker"
     QUICK_REPLY = "quick_reply"
-    INTERACTIVE = "interactive"
+    BUTTON = "button"
+    CAROUSEL = "carousel"
+
+
+class ChannelType(Enum):
+    """Types of communication channels."""
+    WEB = "web"
+    MOBILE = "mobile"
+    WHATSAPP = "whatsapp"
+    TELEGRAM = "telegram"
+    SLACK = "slack"
+    VOICE = "voice"
+    SMS = "sms"
+    EMAIL = "email"
+
+
+@dataclass
+class ChannelUser:
+    """User information for channels."""
+    user_id: str
+    channel_user_id: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+
+
+@dataclass
+class MessageAttachment:
+    """File attachment for messages."""
+    filename: str
+    content_type: str
+    size: int
+    url: Optional[str] = None
+    data: Optional[bytes] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+
+
+@dataclass
+class ChannelMessage:
+    """Message received from a channel."""
+    message_id: str
+    user: ChannelUser
+    text: str
+    message_type: MessageType = MessageType.TEXT
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    attachments: List[MessageAttachment] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    thread_id: Optional[str] = None
+    reply_to: Optional[str] = None
+
+
+@dataclass
+class ChannelResponse:
+    """Response to send through a channel."""
+    text: str
+    message_type: MessageType = MessageType.TEXT
+    attachments: List[MessageAttachment] = field(default_factory=list)
+    quick_replies: List[str] = field(default_factory=list)
+    buttons: List[Dict[str, str]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    delay_seconds: float = 0.0
 
 
 class ChannelError(Exception):
     """Base exception for channel-related errors."""
     
-    def __init__(self, message: str, error_code: Optional[str] = None, channel_type: Optional[ChannelType] = None):
+    def __init__(self, message: str, channel: str = "", error_code: str = ""):
         super().__init__(message)
+        self.channel = channel
         self.error_code = error_code
-        self.channel_type = channel_type
-        self.timestamp = datetime.utcnow()
-
-
-class MessageAttachment:
-    """Represents a message attachment (file, image, etc.)."""
-    
-    def __init__(
-        self,
-        attachment_type: MessageType,
-        url: Optional[str] = None,
-        data: Optional[bytes] = None,
-        filename: Optional[str] = None,
-        mime_type: Optional[str] = None,
-        size: Optional[int] = None
-    ):
-        self.attachment_id = str(uuid.uuid4())
-        self.attachment_type = attachment_type
-        self.url = url
-        self.data = data
-        self.filename = filename
-        self.mime_type = mime_type
-        self.size = size
-        self.created_at = datetime.utcnow()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert attachment to dictionary."""
-        return {
-            "attachment_id": self.attachment_id,
-            "type": self.attachment_type.value,
-            "url": self.url,
-            "filename": self.filename,
-            "mime_type": self.mime_type,
-            "size": self.size,
-            "created_at": self.created_at.isoformat()
-        }
-
-
-class ChannelUser:
-    """Represents a user in a channel."""
-    
-    def __init__(
-        self,
-        user_id: str,
-        channel_user_id: str,
-        name: Optional[str] = None,
-        email: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ):
-        self.user_id = user_id
-        self.channel_user_id = channel_user_id
-        self.name = name
-        self.email = email
-        self.phone = phone
-        self.metadata = metadata or {}
-        self.created_at = datetime.utcnow()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert user to dictionary."""
-        return {
-            "user_id": self.user_id,
-            "channel_user_id": self.channel_user_id,
-            "name": self.name,
-            "email": self.email,
-            "phone": self.phone,
-            "metadata": self.metadata,
-            "created_at": self.created_at.isoformat()
-        }
-
-
-class ChannelMessage:
-    """Represents a message received from a channel."""
-    
-    def __init__(
-        self,
-        message_id: str,
-        content: str,
-        message_type: MessageType,
-        user: ChannelUser,
-        channel_type: ChannelType,
-        session_id: Optional[str] = None,
-        attachments: Optional[List[MessageAttachment]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timestamp: Optional[datetime] = None
-    ):
-        self.message_id = message_id
-        self.content = content
-        self.message_type = message_type
-        self.user = user
-        self.channel_type = channel_type
-        self.session_id = session_id or str(uuid.uuid4())
-        self.attachments = attachments or []
-        self.metadata = metadata or {}
-        self.timestamp = timestamp or datetime.utcnow()
-    
-    @classmethod
-    def create(
-        cls,
-        content: str,
-        user_id: str,
-        channel_type: ChannelType,
-        channel_user_id: Optional[str] = None,
-        message_type: MessageType = MessageType.TEXT,
-        session_id: Optional[str] = None,
-        attachments: Optional[List[MessageAttachment]] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> "ChannelMessage":
-        """Create a new channel message."""
-        user = ChannelUser(
-            user_id=user_id,
-            channel_user_id=channel_user_id or user_id
-        )
-        
-        return cls(
-            message_id=str(uuid.uuid4()),
-            content=content,
-            message_type=message_type,
-            user=user,
-            channel_type=channel_type,
-            session_id=session_id,
-            attachments=attachments,
-            metadata=metadata
-        )
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert message to dictionary."""
-        return {
-            "message_id": self.message_id,
-            "content": self.content,
-            "message_type": self.message_type.value,
-            "user": self.user.to_dict(),
-            "channel_type": self.channel_type.value,
-            "session_id": self.session_id,
-            "attachments": [att.to_dict() for att in self.attachments],
-            "metadata": self.metadata,
-            "timestamp": self.timestamp.isoformat()
-        }
-
-
-class ChannelResponse:
-    """Represents a response to be sent through a channel."""
-    
-    def __init__(
-        self,
-        response_id: str,
-        content: str,
-        channel_type: ChannelType,
-        message_type: MessageType = MessageType.TEXT,
-        quick_replies: Optional[List[str]] = None,
-        suggested_actions: Optional[List[Dict[str, Any]]] = None,
-        attachments: Optional[List[MessageAttachment]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        requires_human_handoff: bool = False,
-        confidence_score: Optional[float] = None,
-        timestamp: Optional[datetime] = None
-    ):
-        self.response_id = response_id
-        self.content = content
-        self.channel_type = channel_type
-        self.message_type = message_type
-        self.quick_replies = quick_replies or []
-        self.suggested_actions = suggested_actions or []
-        self.attachments = attachments or []
-        self.metadata = metadata or {}
-        self.requires_human_handoff = requires_human_handoff
-        self.confidence_score = confidence_score
-        self.timestamp = timestamp or datetime.utcnow()
-    
-    @classmethod
-    def create(
-        cls,
-        content: str,
-        channel_type: ChannelType,
-        message_type: MessageType = MessageType.TEXT,
-        quick_replies: Optional[List[str]] = None,
-        suggested_actions: Optional[List[Dict[str, Any]]] = None,
-        requires_human_handoff: bool = False,
-        confidence_score: Optional[float] = None
-    ) -> "ChannelResponse":
-        """Create a new channel response."""
-        return cls(
-            response_id=str(uuid.uuid4()),
-            content=content,
-            channel_type=channel_type,
-            message_type=message_type,
-            quick_replies=quick_replies,
-            suggested_actions=suggested_actions,
-            requires_human_handoff=requires_human_handoff,
-            confidence_score=confidence_score
-        )
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert response to dictionary."""
-        return {
-            "response_id": self.response_id,
-            "content": self.content,
-            "channel_type": self.channel_type.value,
-            "message_type": self.message_type.value,
-            "quick_replies": self.quick_replies,
-            "suggested_actions": self.suggested_actions,
-            "attachments": [att.to_dict() for att in self.attachments],
-            "metadata": self.metadata,
-            "requires_human_handoff": self.requires_human_handoff,
-            "confidence_score": self.confidence_score,
-            "timestamp": self.timestamp.isoformat()
-        }
 
 
 class BaseChannel(ABC):
     """
-    Abstract base class for all channel implementations.
+    Abstract base class for all communication channels.
     
-    Defines the common interface that all channels must implement
-    for sending and receiving messages.
+    Defines the interface that all channels must implement for sending and receiving messages.
     """
     
-    def __init__(self, channel_config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the base channel.
+        Initialize the channel.
         
         Args:
-            channel_config: Configuration dictionary for the channel
+            config: Channel configuration dictionary
         """
-        self.config = channel_config
-        self.is_active = False
-        self.channel_type = self._get_channel_type()
-        self.created_at = datetime.utcnow()
+        self.config = config
+        self.channel_type = ChannelType(config.get('type', 'web'))
+        self.is_connected = False
+        self.is_running = False
         
-        # Common configuration
-        self.max_retries = channel_config.get("max_retries", 3)
-        self.retry_delay = channel_config.get("retry_delay", 1.0)
-        self.timeout = channel_config.get("timeout", 30.0)
-        
-        # Metrics
-        self.messages_sent = 0
-        self.messages_received = 0
-        self.errors_count = 0
-    
+    @property
     @abstractmethod
-    def _get_channel_type(self) -> ChannelType:
-        """Return the specific channel type."""
+    def name(self) -> str:
+        """Channel name identifier."""
         pass
     
     @abstractmethod
     async def initialize(self) -> bool:
         """
-        Initialize the channel for operation.
+        Initialize the channel and establish connections.
         
         Returns:
-            bool: True if initialization successful, False otherwise
+            bool: True if initialization successful
         """
         pass
     
     @abstractmethod
-    async def send_message(self, response: ChannelResponse, recipient_id: str) -> bool:
+    async def start(self) -> bool:
         """
-        Send a message through the channel.
+        Start the channel for receiving messages.
+        
+        Returns:
+            bool: True if started successfully
+        """
+        pass
+    
+    @abstractmethod
+    async def stop(self) -> bool:
+        """
+        Stop the channel and close connections.
+        
+        Returns:
+            bool: True if stopped successfully
+        """
+        pass
+    
+    @abstractmethod
+    async def send_message(self, message: ChannelResponse, user: ChannelUser) -> bool:
+        """
+        Send a message through this channel.
         
         Args:
-            response: The response to send
-            recipient_id: The recipient identifier
+            message: Response message to send
+            user: Target user
             
         Returns:
-            bool: True if message sent successfully, False otherwise
+            bool: True if sent successfully
         """
         pass
     
     @abstractmethod
-    async def receive_message(self) -> Optional[ChannelMessage]:
+    async def receive_messages(self) -> AsyncGenerator[ChannelMessage, None]:
         """
-        Receive a message from the channel.
+        Receive messages from this channel.
         
-        Returns:
-            ChannelMessage: The received message, or None if no message available
+        Yields:
+            ChannelMessage: Incoming messages
         """
         pass
     
-    @abstractmethod
     async def validate_message(self, message: ChannelMessage) -> bool:
         """
         Validate an incoming message.
         
         Args:
-            message: The message to validate
+            message: Message to validate
             
         Returns:
-            bool: True if message is valid, False otherwise
+            bool: True if message is valid
         """
-        pass
-    
-    @abstractmethod
-    def get_capabilities(self) -> List[str]:
-        """
-        Get the capabilities supported by this channel.
+        if not message.text and not message.attachments:
+            return False
         
-        Returns:
-            List[str]: List of capability names
-        """
-        pass
+        if not message.user or not message.user.user_id:
+            return False
+        
+        return True
     
-    def format_response_for_channel(self, response: ChannelResponse) -> ChannelResponse:
+    async def format_response(self, response: ChannelResponse) -> ChannelResponse:
         """
-        Format a response for this specific channel.
+        Format a response for this channel's requirements.
         
         Args:
-            response: The response to format
+            response: Original response
             
         Returns:
-            ChannelResponse: The formatted response
+            ChannelResponse: Formatted response
         """
         # Default implementation - override in subclasses for channel-specific formatting
         return response
     
-    async def health_check(self) -> Dict[str, Any]:
+    def get_status(self) -> Dict[str, Any]:
         """
-        Perform a health check on the channel.
+        Get channel status information.
         
         Returns:
-            Dict[str, Any]: Health check results
+            Dict containing status data
         """
         return {
-            "channel_type": self.channel_type.value,
-            "is_active": self.is_active,
-            "uptime_seconds": (datetime.utcnow() - self.created_at).total_seconds(),
-            "messages_sent": self.messages_sent,
-            "messages_received": self.messages_received,
-            "errors_count": self.errors_count,
-            "status": "healthy" if self.is_active else "inactive"
+            'name': self.name,
+            'type': self.channel_type.value,
+            'connected': self.is_connected,
+            'running': self.is_running,
+            'config': {k: v for k, v in self.config.items() if not k.startswith('_')}
         }
     
-    async def close(self) -> bool:
+    def get_config(self) -> Dict[str, Any]:
+        """Get channel configuration."""
+        return self.config.copy()
+    
+    def update_config(self, new_config: Dict[str, Any]):
         """
-        Close the channel and cleanup resources.
+        Update channel configuration.
+        
+        Args:
+            new_config: New configuration data
+        """
+        self.config.update(new_config)
+
+
+class ChannelManager:
+    """
+    Manager for multiple communication channels.
+    
+    Handles registration, routing, and coordination of different channels.
+    """
+    
+    def __init__(self):
+        """Initialize the channel manager."""
+        self.channels: Dict[str, BaseChannel] = {}
+        self.is_running = False
+    
+    async def register_channel(self, channel: BaseChannel) -> bool:
+        """
+        Register a channel with the manager.
+        
+        Args:
+            channel: Channel instance to register
+            
+        Returns:
+            bool: True if registered successfully
+        """
+        try:
+            channel_name = channel.name
+            if channel_name in self.channels:
+                raise ChannelError(f"Channel {channel_name} already registered")
+            
+            await channel.initialize()
+            self.channels[channel_name] = channel
+            return True
+            
+        except Exception as e:
+            raise ChannelError(f"Failed to register channel: {e}")
+    
+    async def unregister_channel(self, channel_name: str) -> bool:
+        """
+        Unregister a channel from the manager.
+        
+        Args:
+            channel_name: Name of channel to unregister
+            
+        Returns:
+            bool: True if unregistered successfully
+        """
+        if channel_name not in self.channels:
+            return False
+        
+        try:
+            channel = self.channels[channel_name]
+            await channel.stop()
+            del self.channels[channel_name]
+            return True
+            
+        except Exception:
+            return False
+    
+    async def start_all(self) -> bool:
+        """
+        Start all registered channels.
         
         Returns:
-            bool: True if closed successfully, False otherwise
+            bool: True if all started successfully
         """
-        self.is_active = False
-        return True
+        try:
+            for channel in self.channels.values():
+                await channel.start()
+            
+            self.is_running = True
+            return True
+            
+        except Exception:
+            return False
     
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get channel metrics."""
+    async def stop_all(self) -> bool:
+        """
+        Stop all registered channels.
+        
+        Returns:
+            bool: True if all stopped successfully
+        """
+        try:
+            for channel in self.channels.values():
+                await channel.stop()
+            
+            self.is_running = False
+            return True
+            
+        except Exception:
+            return False
+    
+    async def send_message(self, channel_name: str, message: ChannelResponse, user: ChannelUser) -> bool:
+        """
+        Send message through specific channel.
+        
+        Args:
+            channel_name: Name of channel to use
+            message: Message to send
+            user: Target user
+            
+        Returns:
+            bool: True if sent successfully
+        """
+        if channel_name not in self.channels:
+            return False
+        
+        channel = self.channels[channel_name]
+        return await channel.send_message(message, user)
+    
+    async def broadcast_message(self, message: ChannelResponse, user: ChannelUser) -> int:
+        """
+        Broadcast message to all channels.
+        
+        Args:
+            message: Message to broadcast
+            user: Target user
+            
+        Returns:
+            int: Number of channels that successfully sent the message
+        """
+        success_count = 0
+        
+        for channel in self.channels.values():
+            try:
+                if await channel.send_message(message, user):
+                    success_count += 1
+            except Exception:
+                continue
+        
+        return success_count
+    
+    def get_channels(self) -> List[str]:
+        """Get list of registered channel names."""
+        return list(self.channels.keys())
+    
+    def get_channel(self, channel_name: str) -> Optional[BaseChannel]:
+        """
+        Get specific channel instance.
+        
+        Args:
+            channel_name: Name of channel
+            
+        Returns:
+            BaseChannel instance or None if not found
+        """
+        return self.channels.get(channel_name)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get status of all channels.
+        
+        Returns:
+            Dict containing status information
+        """
         return {
-            "messages_sent": self.messages_sent,
-            "messages_received": self.messages_received,
-            "errors_count": self.errors_count,
-            "uptime_seconds": (datetime.utcnow() - self.created_at).total_seconds()
+            'running': self.is_running,
+            'channel_count': len(self.channels),
+            'channels': {name: channel.get_status() for name, channel in self.channels.items()}
         }
-    
-    def _increment_sent(self):
-        """Increment sent message counter."""
-        self.messages_sent += 1
-    
-    def _increment_received(self):
-        """Increment received message counter."""
-        self.messages_received += 1
-    
-    def _increment_errors(self):
-        """Increment error counter."""
-        self.errors_count += 1
